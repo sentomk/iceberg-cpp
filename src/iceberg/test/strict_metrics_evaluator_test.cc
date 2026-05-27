@@ -846,4 +846,38 @@ TEST_F(StrictMetricsEvaluatorMigratedTest, EvaluateOnNestedColumnWithStats) {
   ExpectShouldRead(Expressions::NotNull("struct.nested_col_with_stats"), false);
 }
 
+TEST_F(StrictMetricsEvaluatorMigratedTest, MissingNullCountForField) {
+  // Field 14 (no_nan_stats, float64, optional) has bounds and value_counts but is
+  // missing from null_value_counts. The evaluator must conservatively assume nulls
+  // may exist and return kRowsMightNotMatch for comparison operators.
+  ExpectShouldRead(Expressions::LessThan("no_nan_stats", Literal::Double(200.0)), false);
+  ExpectShouldRead(Expressions::LessThanOrEqual("no_nan_stats", Literal::Double(200.0)),
+                   false);
+  ExpectShouldRead(Expressions::GreaterThan("no_nan_stats", Literal::Double(-1.0)),
+                   false);
+  ExpectShouldRead(Expressions::GreaterThanOrEqual("no_nan_stats", Literal::Double(-1.0)),
+                   false);
+  ExpectShouldRead(Expressions::Equal("no_nan_stats", Literal::Double(50.0)), false);
+}
+
+TEST_F(StrictMetricsEvaluatorMigratedTest, MissingNanCountForField) {
+  // Field 14 (no_nan_stats, float64, optional) is missing from nan_value_counts.
+  // For a floating-point field, the evaluator must conservatively assume NaNs may
+  // exist and return kRowsMightNotMatch for comparison operators.
+  auto data_file = std::make_shared<DataFile>();
+  data_file->file_path = "nan_test.parquet";
+  data_file->file_format = FileFormatType::kParquet;
+  data_file->record_count = 50;
+  data_file->value_counts = {{14, 50L}};
+  data_file->null_value_counts = {{14, 0L}};
+  data_file->nan_value_counts = {{8, 0L}};
+  data_file->lower_bounds = {{14, Literal::Double(1.0).Serialize().value()}};
+  data_file->upper_bounds = {{14, Literal::Double(100.0).Serialize().value()}};
+
+  ExpectShouldRead(Expressions::LessThan("no_nan_stats", Literal::Double(200.0)), false,
+                   data_file);
+  ExpectShouldRead(Expressions::GreaterThan("no_nan_stats", Literal::Double(-1.0)), false,
+                   data_file);
+}
+
 }  // namespace iceberg
