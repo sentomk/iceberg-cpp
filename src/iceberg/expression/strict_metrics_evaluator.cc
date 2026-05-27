@@ -436,18 +436,39 @@ class StrictMetricsVisitor : public BoundVisitor<bool> {
   }
 
   bool CanContainNulls(int32_t id) {
+    auto field_result = schema_.GetFieldById(id);
+    if (field_result.has_value() && field_result->has_value() &&
+        !field_result->value().get().optional()) {
+      return false;
+    }
+
     if (data_file_.null_value_counts.empty()) {
       return true;
     }
     auto it = data_file_.null_value_counts.find(id);
-    return it != data_file_.null_value_counts.cend() && it->second > 0;
+    if (it == data_file_.null_value_counts.cend()) {
+      return true;
+    }
+    return it->second > 0;
   }
 
   bool CanContainNaNs(int32_t id) {
-    // nan counts might be null for early version writers when nan counters are not
-    // populated.
+    auto field_result = schema_.GetFieldById(id);
+    if (field_result.has_value() && field_result->has_value()) {
+      auto type_id = field_result->value().get().type()->type_id();
+      if (type_id != TypeId::kFloat && type_id != TypeId::kDouble) {
+        return false;
+      }
+    }
+
+    if (data_file_.nan_value_counts.empty()) {
+      return true;
+    }
     auto it = data_file_.nan_value_counts.find(id);
-    return it != data_file_.nan_value_counts.cend() && it->second > 0;
+    if (it == data_file_.nan_value_counts.cend()) {
+      return true;
+    }
+    return it->second > 0;
   }
 
   bool ContainsNullsOnly(int32_t id) {
