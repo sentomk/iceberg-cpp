@@ -40,9 +40,14 @@ constexpr bool kRowsMightNotMatch = false;
 // For example, bucket16(x) = 0 can't be determined because this visitor operates on data
 // metrics and not partition values. It may be possible to un-transform expressions for
 // order preserving transforms in the future, but this is not currently supported.
-#define RETURN_IF_NOT_REFERENCE(expr)                                         \
-  if (auto ref = dynamic_cast<BoundReference*>(expr.get()); ref == nullptr) { \
-    return kRowsMightNotMatch;                                                \
+// Binds `ref` to the BoundReference behind `expr`, or returns kRowsMightNotMatch
+// when the term is not a direct reference. Reusing the cast result avoids the
+// repeated virtual `reference()` calls (each constructs a shared_ptr via
+// shared_from_this) that would otherwise run on every data file in a scan.
+#define BIND_REFERENCE_OR_RETURN(ref, expr)                            \
+  const auto* ref = dynamic_cast<const BoundReference*>((expr).get()); \
+  if (ref == nullptr) {                                                \
+    return kRowsMightNotMatch;                                         \
   }
 
 class StrictMetricsVisitor : public BoundVisitor<bool> {
@@ -65,11 +70,11 @@ class StrictMetricsVisitor : public BoundVisitor<bool> {
   }
 
   Result<bool> IsNull(const std::shared_ptr<Bound>& expr) override {
-    RETURN_IF_NOT_REFERENCE(expr);
+    BIND_REFERENCE_OR_RETURN(ref, expr);
 
     // no need to check whether the field is required because binding evaluates that case
     // if the column has any non-null values, the expression does not match
-    int32_t id = expr->reference()->field().field_id();
+    int32_t id = ref->field().field_id();
 
     ICEBERG_ASSIGN_OR_RAISE(auto is_nested, IsNestedColumn(id));
     if (is_nested) {
@@ -83,11 +88,11 @@ class StrictMetricsVisitor : public BoundVisitor<bool> {
   }
 
   Result<bool> NotNull(const std::shared_ptr<Bound>& expr) override {
-    RETURN_IF_NOT_REFERENCE(expr);
+    BIND_REFERENCE_OR_RETURN(ref, expr);
 
     // no need to check whether the field is required because binding evaluates that case
     // if the column has any null values, the expression does not match
-    int32_t id = expr->reference()->field().field_id();
+    int32_t id = ref->field().field_id();
 
     ICEBERG_ASSIGN_OR_RAISE(auto is_nested, IsNestedColumn(id));
     if (is_nested) {
@@ -103,9 +108,9 @@ class StrictMetricsVisitor : public BoundVisitor<bool> {
   }
 
   Result<bool> IsNaN(const std::shared_ptr<Bound>& expr) override {
-    RETURN_IF_NOT_REFERENCE(expr);
+    BIND_REFERENCE_OR_RETURN(ref, expr);
 
-    int32_t id = expr->reference()->field().field_id();
+    int32_t id = ref->field().field_id();
 
     if (ContainsNaNsOnly(id)) {
       return kRowsMustMatch;
@@ -115,9 +120,9 @@ class StrictMetricsVisitor : public BoundVisitor<bool> {
   }
 
   Result<bool> NotNaN(const std::shared_ptr<Bound>& expr) override {
-    RETURN_IF_NOT_REFERENCE(expr);
+    BIND_REFERENCE_OR_RETURN(ref, expr);
 
-    int32_t id = expr->reference()->field().field_id();
+    int32_t id = ref->field().field_id();
 
     auto it = data_file_.nan_value_counts.find(id);
     if (it != data_file_.nan_value_counts.cend() && it->second == 0) {
@@ -132,10 +137,10 @@ class StrictMetricsVisitor : public BoundVisitor<bool> {
   }
 
   Result<bool> Lt(const std::shared_ptr<Bound>& expr, const Literal& lit) override {
-    RETURN_IF_NOT_REFERENCE(expr);
+    BIND_REFERENCE_OR_RETURN(ref, expr);
 
     // Rows must match when: <----------Min----Max---X------->
-    int32_t id = expr->reference()->field().field_id();
+    int32_t id = ref->field().field_id();
 
     ICEBERG_ASSIGN_OR_RAISE(auto is_nested, IsNestedColumn(id));
     if (is_nested) {
@@ -150,7 +155,7 @@ class StrictMetricsVisitor : public BoundVisitor<bool> {
 
     auto it = data_file_.upper_bounds.find(id);
     if (it != data_file_.upper_bounds.cend()) {
-      ICEBERG_ASSIGN_OR_RAISE(auto upper, ParseBound(expr, it->second));
+      ICEBERG_ASSIGN_OR_RAISE(auto upper, ParseBound(*ref, it->second));
       if (upper < lit) {
         return kRowsMustMatch;
       }
@@ -160,10 +165,10 @@ class StrictMetricsVisitor : public BoundVisitor<bool> {
   }
 
   Result<bool> LtEq(const std::shared_ptr<Bound>& expr, const Literal& lit) override {
-    RETURN_IF_NOT_REFERENCE(expr);
+    BIND_REFERENCE_OR_RETURN(ref, expr);
 
     // Rows must match when: <----------Min----Max---X------->
-    int32_t id = expr->reference()->field().field_id();
+    int32_t id = ref->field().field_id();
 
     ICEBERG_ASSIGN_OR_RAISE(auto is_nested, IsNestedColumn(id));
     if (is_nested) {
@@ -178,7 +183,7 @@ class StrictMetricsVisitor : public BoundVisitor<bool> {
 
     auto it = data_file_.upper_bounds.find(id);
     if (it != data_file_.upper_bounds.cend()) {
-      ICEBERG_ASSIGN_OR_RAISE(auto upper, ParseBound(expr, it->second));
+      ICEBERG_ASSIGN_OR_RAISE(auto upper, ParseBound(*ref, it->second));
       if (upper <= lit) {
         return kRowsMustMatch;
       }
@@ -188,10 +193,10 @@ class StrictMetricsVisitor : public BoundVisitor<bool> {
   }
 
   Result<bool> Gt(const std::shared_ptr<Bound>& expr, const Literal& lit) override {
-    RETURN_IF_NOT_REFERENCE(expr);
+    BIND_REFERENCE_OR_RETURN(ref, expr);
 
     // Rows must match when: <-------X---Min----Max---------->
-    int32_t id = expr->reference()->field().field_id();
+    int32_t id = ref->field().field_id();
 
     ICEBERG_ASSIGN_OR_RAISE(auto is_nested, IsNestedColumn(id));
     if (is_nested) {
@@ -206,7 +211,7 @@ class StrictMetricsVisitor : public BoundVisitor<bool> {
 
     auto it = data_file_.lower_bounds.find(id);
     if (it != data_file_.lower_bounds.cend()) {
-      ICEBERG_ASSIGN_OR_RAISE(auto lower, ParseBound(expr, it->second));
+      ICEBERG_ASSIGN_OR_RAISE(auto lower, ParseBound(*ref, it->second));
       if (lower.IsNaN()) {
         // NaN indicates unreliable bounds. See the StrictMetricsEvaluator docs for
         // more.
@@ -222,10 +227,10 @@ class StrictMetricsVisitor : public BoundVisitor<bool> {
   }
 
   Result<bool> GtEq(const std::shared_ptr<Bound>& expr, const Literal& lit) override {
-    RETURN_IF_NOT_REFERENCE(expr);
+    BIND_REFERENCE_OR_RETURN(ref, expr);
 
     // Rows must match when: <-------X---Min----Max---------->
-    int32_t id = expr->reference()->field().field_id();
+    int32_t id = ref->field().field_id();
 
     ICEBERG_ASSIGN_OR_RAISE(auto is_nested, IsNestedColumn(id));
     if (is_nested) {
@@ -240,7 +245,7 @@ class StrictMetricsVisitor : public BoundVisitor<bool> {
 
     auto it = data_file_.lower_bounds.find(id);
     if (it != data_file_.lower_bounds.cend()) {
-      ICEBERG_ASSIGN_OR_RAISE(auto lower, ParseBound(expr, it->second));
+      ICEBERG_ASSIGN_OR_RAISE(auto lower, ParseBound(*ref, it->second));
       if (lower.IsNaN()) {
         // NaN indicates unreliable bounds. See the StrictMetricsEvaluator docs for
         // more.
@@ -256,10 +261,10 @@ class StrictMetricsVisitor : public BoundVisitor<bool> {
   }
 
   Result<bool> Eq(const std::shared_ptr<Bound>& expr, const Literal& lit) override {
-    RETURN_IF_NOT_REFERENCE(expr);
+    BIND_REFERENCE_OR_RETURN(ref, expr);
 
     // Rows must match when Min == X == Max
-    int32_t id = expr->reference()->field().field_id();
+    int32_t id = ref->field().field_id();
 
     ICEBERG_ASSIGN_OR_RAISE(auto is_nested, IsNestedColumn(id));
     if (is_nested) {
@@ -275,11 +280,11 @@ class StrictMetricsVisitor : public BoundVisitor<bool> {
     auto upper_it = data_file_.upper_bounds.find(id);
     if (lower_it != data_file_.lower_bounds.cend() &&
         upper_it != data_file_.upper_bounds.cend()) {
-      ICEBERG_ASSIGN_OR_RAISE(auto lower, ParseBound(expr, lower_it->second));
+      ICEBERG_ASSIGN_OR_RAISE(auto lower, ParseBound(*ref, lower_it->second));
       if (lower != lit) {
         return kRowsMightNotMatch;
       }
-      ICEBERG_ASSIGN_OR_RAISE(auto upper, ParseBound(expr, upper_it->second));
+      ICEBERG_ASSIGN_OR_RAISE(auto upper, ParseBound(*ref, upper_it->second));
       if (upper != lit) {
         return kRowsMightNotMatch;
       }
@@ -291,10 +296,10 @@ class StrictMetricsVisitor : public BoundVisitor<bool> {
   }
 
   Result<bool> NotEq(const std::shared_ptr<Bound>& expr, const Literal& lit) override {
-    RETURN_IF_NOT_REFERENCE(expr);
+    BIND_REFERENCE_OR_RETURN(ref, expr);
 
     // Rows must match when X < Min or Max < X because it is not in the range
-    int32_t id = expr->reference()->field().field_id();
+    int32_t id = ref->field().field_id();
 
     ICEBERG_ASSIGN_OR_RAISE(auto is_nested, IsNestedColumn(id));
     if (is_nested) {
@@ -307,7 +312,7 @@ class StrictMetricsVisitor : public BoundVisitor<bool> {
 
     auto lower_it = data_file_.lower_bounds.find(id);
     if (lower_it != data_file_.lower_bounds.cend()) {
-      ICEBERG_ASSIGN_OR_RAISE(auto lower, ParseBound(expr, lower_it->second));
+      ICEBERG_ASSIGN_OR_RAISE(auto lower, ParseBound(*ref, lower_it->second));
       if (lower.IsNaN()) {
         // NaN indicates unreliable bounds. See the StrictMetricsEvaluator docs for
         // more.
@@ -320,7 +325,7 @@ class StrictMetricsVisitor : public BoundVisitor<bool> {
 
     auto upper_it = data_file_.upper_bounds.find(id);
     if (upper_it != data_file_.upper_bounds.cend()) {
-      ICEBERG_ASSIGN_OR_RAISE(auto upper, ParseBound(expr, upper_it->second));
+      ICEBERG_ASSIGN_OR_RAISE(auto upper, ParseBound(*ref, upper_it->second));
       if (upper < lit) {
         return kRowsMustMatch;
       }
@@ -331,9 +336,9 @@ class StrictMetricsVisitor : public BoundVisitor<bool> {
 
   Result<bool> In(const std::shared_ptr<Bound>& expr,
                   const BoundSetPredicate::LiteralSet& literal_set) override {
-    RETURN_IF_NOT_REFERENCE(expr);
+    BIND_REFERENCE_OR_RETURN(ref, expr);
 
-    int32_t id = expr->reference()->field().field_id();
+    int32_t id = ref->field().field_id();
 
     ICEBERG_ASSIGN_OR_RAISE(auto is_nested, IsNestedColumn(id));
     if (is_nested) {
@@ -351,12 +356,12 @@ class StrictMetricsVisitor : public BoundVisitor<bool> {
         upper_it != data_file_.upper_bounds.cend()) {
       // similar to the implementation in eq, first check if the lower bound is in the
       // set
-      ICEBERG_ASSIGN_OR_RAISE(auto lower, ParseBound(expr, lower_it->second));
+      ICEBERG_ASSIGN_OR_RAISE(auto lower, ParseBound(*ref, lower_it->second));
       if (!literal_set.contains(lower)) {
         return kRowsMightNotMatch;
       }
       // check if the upper bound is in the set
-      ICEBERG_ASSIGN_OR_RAISE(auto upper, ParseBound(expr, upper_it->second));
+      ICEBERG_ASSIGN_OR_RAISE(auto upper, ParseBound(*ref, upper_it->second));
       if (!literal_set.contains(upper)) {
         return kRowsMightNotMatch;
       }
@@ -375,9 +380,9 @@ class StrictMetricsVisitor : public BoundVisitor<bool> {
 
   Result<bool> NotIn(const std::shared_ptr<Bound>& expr,
                      const BoundSetPredicate::LiteralSet& literal_set) override {
-    RETURN_IF_NOT_REFERENCE(expr);
+    BIND_REFERENCE_OR_RETURN(ref, expr);
 
-    int32_t id = expr->reference()->field().field_id();
+    int32_t id = ref->field().field_id();
 
     ICEBERG_ASSIGN_OR_RAISE(auto is_nested, IsNestedColumn(id));
     if (is_nested) {
@@ -390,7 +395,7 @@ class StrictMetricsVisitor : public BoundVisitor<bool> {
     std::optional<Literal> lower_bound;
     auto lower_it = data_file_.lower_bounds.find(id);
     if (lower_it != data_file_.lower_bounds.cend()) {
-      ICEBERG_ASSIGN_OR_RAISE(auto lower, ParseBound(expr, lower_it->second));
+      ICEBERG_ASSIGN_OR_RAISE(auto lower, ParseBound(*ref, lower_it->second));
       if (lower.IsNaN()) {
         // NaN indicates unreliable bounds. See the StrictMetricsEvaluator docs for
         // more.
@@ -409,7 +414,7 @@ class StrictMetricsVisitor : public BoundVisitor<bool> {
 
     auto upper_it = data_file_.upper_bounds.find(id);
     if (upper_it != data_file_.upper_bounds.cend()) {
-      ICEBERG_ASSIGN_OR_RAISE(auto upper, ParseBound(expr, upper_it->second));
+      ICEBERG_ASSIGN_OR_RAISE(auto upper, ParseBound(*ref, upper_it->second));
       auto filtered_view = literals_view | std::views::filter([&](const Literal& lit) {
                              return upper >= lit;
                            });
@@ -437,9 +442,9 @@ class StrictMetricsVisitor : public BoundVisitor<bool> {
   }
 
  private:
-  Result<Literal> ParseBound(const std::shared_ptr<Bound>& expr,
+  Result<Literal> ParseBound(const BoundReference& ref,
                              const std::vector<uint8_t>& stats) {
-    auto type = expr->reference()->type();
+    auto type = ref.type();
     if (!type->is_primitive()) {
       return NotSupported("Bound of non-primitive type is not supported.");
     }

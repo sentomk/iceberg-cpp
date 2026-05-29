@@ -157,8 +157,7 @@ class ManifestEvalVisitor : public BoundVisitor<bool> {
       return kRowCannotMatch;  // values are all null
     }
     ICEBERG_ASSIGN_OR_RAISE(
-        auto upper,
-        DeserializeBoundLiteral(summary.upper_bound.value(), expr->reference()->type()));
+        auto upper, DeserializeBoundLiteral(summary.upper_bound.value(), ref->type()));
     if (upper < lit) {
       return kRowCannotMatch;
     }

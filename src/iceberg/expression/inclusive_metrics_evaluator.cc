@@ -97,12 +97,13 @@ class InclusiveMetricsVisitor : public BoundVisitor<bool> {
   }
 
   Result<bool> NotNaN(const std::shared_ptr<Bound>& expr) override {
-    if (dynamic_cast<const BoundReference*>(expr.get()) == nullptr) {
+    const auto* ref = dynamic_cast<const BoundReference*>(expr.get());
+    if (ref == nullptr) {
       // identity transforms are already removed by this time
       return kRowsMightMatch;
     }
 
-    int32_t id = expr->reference()->field().field_id();
+    int32_t id = ref->field().field_id();
     if (ContainsNaNsOnly(id)) {
       return kRowCannotMatch;
     }
